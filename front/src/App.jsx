@@ -119,7 +119,7 @@ export default function App() {
           <button
             style={{ marginTop: 15, marginBottom: 10, marginLeft: 10,padding: "8px 16px" }}
             onClick={async () => {
-              const res = await fetch("http://localhost:4000/api/download-docx", {
+              const res = await fetch("https://pdf-scanner-5awo.onrender.com/api/download-docx", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ questions: result.questions }),

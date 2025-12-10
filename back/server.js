@@ -104,20 +104,20 @@ function parseQuestions(cleaned) {
   const lines = cleaned
     .split("\n")
     .map(l => l.trim())
-    .filter(l => l !== "");
+    .filter(Boolean);
 
   const questions = [];
   let current = null;
 
-  const qStart = /^(\d{1,3})[.)]?\s+(.*)$/;
+  // ✅ SUPER FLEXIBLE question detection
+  const qStart = /^(\d{1,3})\s*[.)-]?\s+(.*)$/;
 
-  // STRICT option pattern — prevents “A =” from being treated as option
-  const optRe = /^\(?([a-dA-D])\)?[.)]\s+(.*)$/;
+  // ✅ SUPER FLEXIBLE option detection for Mathpix OCR
+  const optRe = /^(?:\(|\[)?\s*([a-dA-D1-4])\s*(?:\)|\]|\.|\))?\s+(.*)$/;
 
   for (const line of lines) {
     const qMatch = line.match(qStart);
 
-    // New question
     if (qMatch) {
       if (current) questions.push(current);
 
@@ -126,21 +126,25 @@ function parseQuestions(cleaned) {
         stem: qMatch[2],
         options: []
       };
-
       continue;
     }
 
-    // Option detection (very strict)
     const oMatch = line.match(optRe);
     if (current && oMatch) {
+      let rawLabel = oMatch[1].toLowerCase();
+
+      // ✅ convert 1–4 to a–d
+      const numToAlpha = { "1": "a", "2": "b", "3": "c", "4": "d" };
+      const finalLabel = numToAlpha[rawLabel] || rawLabel;
+
       current.options.push({
-        label: oMatch[1].toLowerCase(),
+        label: finalLabel,
         text: oMatch[2]
       });
       continue;
     }
 
-    // Continuation lines
+    // ✅ multi-line continuation support
     if (current) {
       if (current.options.length > 0) {
         current.options[current.options.length - 1].text += " " + line;
@@ -151,7 +155,6 @@ function parseQuestions(cleaned) {
   }
 
   if (current) questions.push(current);
-
   return questions;
 }
 
