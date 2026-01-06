@@ -40,6 +40,36 @@ async function uploadToMathpix(filePath) {
   return JSON.parse(await r.text());
 }
 
+function extractInlineOptions(text) {
+  if (!text.includes("![")) {
+    return { cleanedStem: text.trim(), options: [] };
+  }
+
+  // Match: a. ![](any_url_with_any_chars)
+  const optionRegex = /([a-dA-D])\.\s*(\!\[[^\]]*?\]\([^)]*?\))/g;
+
+  const options = [];
+  let cleanedStem = text;
+  let match;
+
+  while ((match = optionRegex.exec(text)) !== null) {
+    options.push({
+      label: match[1].toLowerCase(),
+      text: match[2].trim(),
+    });
+
+    // Remove this option from stem
+    cleanedStem = cleanedStem.replace(match[0], "");
+  }
+
+  return {
+    cleanedStem: cleanedStem.replace(/\s+/g, " ").trim(),
+    options,
+  };
+}
+
+
+
 /* Poll job */
 async function pollStatus(pdf_id) {
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -118,19 +148,27 @@ function parseQuestions(cleaned) {
   for (const line of lines) {
     const qMatch = line.match(qStart);
 
-    if (qMatch) {
-      if (current) questions.push(current);
+if (qMatch) {
+  if (current) questions.push(current);
 
-      current = {
-        number: Number(qMatch[1]),
-        stem: qMatch[2],
-        options: []
-      };
-      continue;
-    }
+  const rawStem = qMatch[2];
+
+  // ✅ extract inline options if present
+  
+current = {
+  number: Number(qMatch[1]),
+  stem: qMatch[2],
+  options: []
+};
+
+
+
+  continue;
+}
 
     const oMatch = line.match(optRe);
-    if (current && oMatch) {
+  if (current && oMatch && !current.options.find(o => o.label === oMatch[1].toLowerCase())) {
+
       let rawLabel = oMatch[1].toLowerCase();
 
       // ✅ convert 1–4 to a–d
@@ -146,9 +184,10 @@ function parseQuestions(cleaned) {
 
     // ✅ multi-line continuation support
     if (current) {
-      if (current.options.length > 0) {
-        current.options[current.options.length - 1].text += " " + line;
-      } else {
+    if (current.options.length > 0 && !line.includes("![")) {
+  current.options[current.options.length - 1].text += " " + line;
+}
+ else {
         current.stem += " " + line;
       }
     }
@@ -157,6 +196,15 @@ function parseQuestions(cleaned) {
   if (current) questions.push(current);
   return questions;
 }
+
+function normalizeInlineOptions(text) {
+  // Force a newline before option markers: a. b. c. d.
+  return text.replace(
+    /\s([a-dA-D])\.\s*(\!\[[^\]]*\]\([^)]*\))/g,
+    "\n$1. $2"
+  );
+}
+
 
 
 
@@ -199,8 +247,10 @@ app.post("/api/convert", upload.single("pdf"), async (req, res) => {
     const status = await pollStatus(pdf_id);
     const mmd = await getMmdContent(pdf_id);
     const answerMap = extractAnswerKey(mmd);
-    const cleaned = cleanMmdText(mmd);
-    const questions = parseQuestions(cleaned);
+let cleaned = cleanMmdText(mmd);
+cleaned = normalizeInlineOptions(cleaned);   // 🔥 CRITICAL LINE
+const questions = parseQuestions(cleaned);
+
 
     // attach answer to each question
     questions.forEach(q => {
