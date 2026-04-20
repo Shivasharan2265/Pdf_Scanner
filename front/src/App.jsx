@@ -22,10 +22,12 @@ export default function App() {
     form.append("pdf", file);
 
     try {
-      const res = await fetch("http://localhost:4000/api/convert", {
+      const res = await fetch("https://pdf-scanner-5awo.onrender.com/api/convert", {
         method: "POST",
         body: form
       });
+
+      // https://pdf-scanner-5awo.onrender.com/api/convert
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
       setResult(json);
