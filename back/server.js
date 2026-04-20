@@ -129,7 +129,7 @@ function extractAnswerKey(mmd) {
 }
 
 
-/* Parse into questions + options */
+
 function parseQuestions(cleaned) {
   const lines = cleaned
     .split("\n")
@@ -182,7 +182,7 @@ current = {
       continue;
     }
 
-    // ✅ multi-line continuation support
+  
     if (current) {
     if (current.options.length > 0 && !line.includes("![")) {
   current.options[current.options.length - 1].text += " " + line;
