@@ -140,7 +140,9 @@ function parseQuestions(cleaned) {
   let current = null;
 
   // ✅ SUPER FLEXIBLE question detection
-  const qStart = /^(\d{1,3})\s*[.)-]?\s+(.*)$/;
+  // const qStart = /^(\d{1,3})\s*[.)-]?\s+(.*)$/;
+
+  const qStart = /^(\d{1,3})\.\s+(.*)$/;
 
   // ✅ SUPER FLEXIBLE option detection for Mathpix OCR
   const optRe = /^(?:\(|\[)?\s*([a-dA-D1-4])\s*(?:\)|\]|\.|\))?\s+(.*)$/;
