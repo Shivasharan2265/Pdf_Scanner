@@ -101,112 +101,174 @@ function cleanMmdText(mmd) {
   s = s.replace(/\\\[(.*?)\\\]/gs, "\\($1\\)");
   s = s.replace(/\$([^$]+?)\$/g, "\\($1\\)");
   s = s.replace(/^\\section\*{.*}$/gm, "");
-  s = s.replace(/Answer Key[\s\S]*$/i, "");
+  s = s.replace(/\\begin\{table\}[\s\S]*?\\end\{table\}/g, "");
+ 
   return s.trim();
 }
 
 function extractAnswerKey(mmd) {
-  const answerSection = mmd.split(/Answer Key[:]?/i)[1];
-  if (!answerSection) return {};
-
-  const keyLines = answerSection.split(/\n/).map(l => l.trim());
-
   const answerMap = {};
 
-  keyLines.forEach(line => {
-    const parts = line.match(/(\d+)\)\s*([A-D])/gi);
-    if (parts) {
-      parts.forEach(p => {
-        const m = p.match(/(\d+)\)\s*([A-D])/i);
-        if (m) {
-          answerMap[m[1]] = m[2].toLowerCase();
-        }
-      });
+  const startIndex = mmd.search(/Answers/i);
+  if (startIndex === -1) return {};
+
+  // 🔥 include buffer before Answers
+  const answerText = mmd.slice(Math.max(0, startIndex - 200));
+
+
+  // ✅ use full text (no limit)
+ let textToParse = answerText;
+
+// 🔥 remove latex table junk
+textToParse = textToParse
+  .replace(/\\begin\{.*?\}/g, "")
+  .replace(/\\end\{.*?\}/g, "")
+  .replace(/\\hline/g, "")
+  .replace(/\$/g, "")
+  .replace(/&/g, " ")
+  .replace(/\\\\/g, " ")
+  .replace(/\s+/g, " ");
+
+
+ // 🔍 DEBUG HERE
+  console.log("TEXT LENGTH:", textToParse.length);
+  console.log("LAST PART OF TEXT:\n", textToParse.slice(-500));
+
+const regex = /(\d{1,3})\s*(?:&|\s)*\s*\(?\$?\(?\s*([A-Da-d])\s*\)?\$?\)?/g;
+
+  let match;
+while ((match = regex.exec(textToParse)) !== null) {
+    const qNum = Number(match[1]);
+    const ans = match[2].toLowerCase();
+
+    if (qNum >= 1 && qNum <= 122) {
+      answerMap[qNum] = ans;
     }
-  });
+  }
+
+  // 🔥 fallback for Q1
+  if (!answerMap[1]) {
+    const fallbackMatch = mmd.match(/1\s*[\.\:\-\)]?\s*\(?\s*([A-Da-d])\s*\)?/);
+    if (fallbackMatch) {
+      answerMap[1] = fallbackMatch[1].toLowerCase();
+    }
+  }
 
   return answerMap;
 }
 
 
-
+/* Parse into questions + options */
 function parseQuestions(cleaned) {
-  const lines = cleaned
-    .split("\n")
-    .map(l => l.trim())
-    .filter(Boolean);
-
+  const lines = cleaned.split("\n").map(l => l.trim()).filter(Boolean);
   const questions = [];
   let current = null;
 
-  // ✅ SUPER FLEXIBLE question detection
-  // const qStart = /^(\d{1,3})\s*[.)-]?\s+(.*)$/;
-
-  const qStart = /^(\d{1,3})\.\s+(.*)$/;
-
-  // ✅ SUPER FLEXIBLE option detection for Mathpix OCR
-  const optRe = /^(?:\(|\[)?\s*([a-dA-D1-4])\s*(?:\)|\]|\.|\))?\s+(.*)$/;
+  // Pattern for Question: Matches "31. Text" or "31 Text"
+const qStart = /^(\d{1,3})\s+(.*)/;
+  // Pattern for Option: Matches "(a) Text" or "a. Text"
+  const optRe = /^\(?([a-dA-D])[\)\.]?\s+(.*)$/;
 
   for (const line of lines) {
+     // 🚨 STOP when table starts
+  if (/\\begin\{table\}/i.test(line)) {
+    break;
+  }
+  // 🚨 STOP when answers section starts
+  if (/Answers/i.test(line)) {
+    break;
+  }
     const qMatch = line.match(qStart);
+    const oMatch = line.match(optRe);
 
-if (qMatch) {
-  if (current) questions.push(current);
+    // 🔥 FIX: detect missed question when options already full
+if (current && current.options.length === 4 && !oMatch) {
+  const forcedQ = line.match(/^(\d{1,3})\s+(.*)/);
 
-  const rawStem = qMatch[2];
+  if (forcedQ) {
+    questions.push(current);
 
-  // ✅ extract inline options if present
-  
-current = {
-  number: Number(qMatch[1]),
-  stem: qMatch[2],
-  options: []
-};
+    current = {
+      number: Number(forcedQ[1]),
+      stem: forcedQ[2],
+      options: []
+    };
 
-
-
-  continue;
+    continue;
+  }
 }
 
-    const oMatch = line.match(optRe);
-  if (current && oMatch && !current.options.find(o => o.label === oMatch[1].toLowerCase())) {
+    // --- CASE 1: NEW QUESTION DETECTED ---
+    if (qMatch) {
+      const qNum = Number(qMatch[1]);
+      const qText = qMatch[2];
 
-      let rawLabel = oMatch[1].toLowerCase();
+      // If we already have a question, push it to the list
+      if (current) {
+        questions.push(current);
+      }
 
-      // ✅ convert 1–4 to a–d
-      const numToAlpha = { "1": "a", "2": "b", "3": "c", "4": "d" };
-      const finalLabel = numToAlpha[rawLabel] || rawLabel;
-
-      current.options.push({
-        label: finalLabel,
-        text: oMatch[2]
-      });
+      current = {
+        number: qNum,
+        stem: qText,
+        options: []
+      };
       continue;
     }
 
-  
+    // --- CASE 2: OPTION DETECTED ---
+    if (current && oMatch) {
+      const label = oMatch[1].toLowerCase();
+      const text = oMatch[2].trim();
+
+      // Ensure we don't duplicate labels (e.g., two '(a)' in one question)
+      const exists = current.options.find(o => o.label === label);
+      if (!exists) {
+        current.options.push({ label, text });
+        continue;
+      }
+    }
+
+    // --- CASE 3: CONTINUATION TEXT ---
     if (current) {
-    if (current.options.length > 0 && !line.includes("![")) {
+  if (current.options.length > 0) {
+
+  // 🚨 Ignore answer/table junk
+  if (
+    /\\begin\{table\}/i.test(line) ||
+    /Mastering NCERT|Answers|NEET Special/i.test(line)
+  ) {
+    continue;
+  }
+
   current.options[current.options.length - 1].text += " " + line;
-}
- else {
+} else {
+        // Add text to the question stem
         current.stem += " " + line;
       }
     }
   }
 
+  // Push the final question
   if (current) questions.push(current);
+  
   return questions;
 }
 
 function normalizeInlineOptions(text) {
-  // Force a newline before option markers: a. b. c. d.
-  return text.replace(
-    /\s([a-dA-D])\.\s*(\!\[[^\]]*\]\([^)]*\))/g,
-    "\n$1. $2"
-  );
-}
+  let s = text;
 
+  // 🔥 1. Split when question number appears in middle
+  s = s.replace(/([a-zA-Z\)])\s+(\d{1,3})\s+(?=[A-Z])/g, "$1\n$2 ");
+
+  // 🔥 2. Also handle cases like "... (d) text 31 Which..."
+  s = s.replace(/\)\s+(\d{1,3})\s+(?=[A-Z])/g, ")\n$1 ");
+
+  // 🔥 3. Force newline before options
+  s = s.replace(/\s*[\(\[]?([a-dA-D])[\)\]\.]\s+/g, "\n($1) ");
+
+  return s;
+}
 
 
 
@@ -249,6 +311,7 @@ app.post("/api/convert", upload.single("pdf"), async (req, res) => {
     const status = await pollStatus(pdf_id);
     const mmd = await getMmdContent(pdf_id);
     const answerMap = extractAnswerKey(mmd);
+    console.log("ANSWER MAP:", answerMap);
 let cleaned = cleanMmdText(mmd);
 cleaned = normalizeInlineOptions(cleaned);   // 🔥 CRITICAL LINE
 const questions = parseQuestions(cleaned);
