@@ -165,7 +165,7 @@ function parseQuestions(cleaned) {
   let current = null;
 
   // Pattern for Question: Matches "31. Text" or "31 Text"
-const qStart = /^(\d{1,3})\s+(.*)/;
+const qStart = /^(\d{1,3})[\.\)]?\s+(.*)/;
   // Pattern for Option: Matches "(a) Text" or "a. Text"
   const optRe = /^\(?([a-dA-D])[\)\.]?\s+(.*)$/;
 
