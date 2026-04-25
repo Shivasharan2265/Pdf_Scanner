@@ -102,6 +102,11 @@ function cleanMmdText(mmd) {
   s = s.replace(/\$([^$]+?)\$/g, "\\($1\\)");
   s = s.replace(/^\\section\*{.*}$/gm, "");
   s = s.replace(/\\begin\{table\}[\s\S]*?\\end\{table\}/g, "");
+
+  // Fix common OCR mistakes
+s = s.replace(/\bI\s+([a-z])/g, (m, p1) => p1.toUpperCase()); // I hree → Three
+s = s.replace(/\b1\s+([a-z])/g, "$1"); // 1 hree → hree
+s = s.replace(/\b([A-Za-z])\s+([a-z]{2,})/g, "$1$2"); // T hree → Three
  
   return s.trim();
 }
@@ -158,6 +163,8 @@ while ((match = regex.exec(textToParse)) !== null) {
 }
 
 
+
+
 /* Parse into questions + options */
 function parseQuestions(cleaned) {
   const lines = cleaned.split("\n").map(l => l.trim()).filter(Boolean);
@@ -167,7 +174,7 @@ function parseQuestions(cleaned) {
   // Pattern for Question: Matches "31. Text" or "31 Text"
 const qStart = /^(\d{1,3})[\.\)]?\s+(.*)/;
   // Pattern for Option: Matches "(a) Text" or "a. Text"
-  const optRe = /^\(?([a-dA-D]|[1-4])[\)\.]?\s+(.*)$/;
+const optRe = /^\(?\s*([a-dA-D1-4])\s*[\)\.]?\s+(.*)$/;
 
   for (const line of lines) {
      // 🚨 STOP when table starts
@@ -217,17 +224,21 @@ if (current && current.options.length === 4 && !oMatch) {
     }
 
     // --- CASE 2: OPTION DETECTED ---
-    if (current && oMatch) {
-      const label = oMatch[1].toLowerCase();
-      const text = oMatch[2].trim();
+if (current && oMatch) {
+  let label = oMatch[1].toLowerCase();
+  const text = oMatch[2].trim();
 
-      // Ensure we don't duplicate labels (e.g., two '(a)' in one question)
-      const exists = current.options.find(o => o.label === label);
-      if (!exists) {
-        current.options.push({ label, text });
-        continue;
-      }
-    }
+  // 🔥 convert 1,2,3,4 → a,b,c,d
+  if (["1", "2", "3", "4"].includes(label)) {
+    label = String.fromCharCode(96 + Number(label)); // 1→a
+  }
+
+  const exists = current.options.find(o => o.label === label);
+  if (!exists) {
+    current.options.push({ label, text });
+    continue;
+  }
+}
 
     // --- CASE 3: CONTINUATION TEXT ---
     if (current) {
@@ -258,14 +269,20 @@ if (current && current.options.length === 4 && !oMatch) {
 function normalizeInlineOptions(text) {
   let s = text;
 
-  // 🔥 1. Split when question number appears in middle
-  s = s.replace(/([a-zA-Z\)])\s+(\d{1,3})\s+(?=[A-Z])/g, "$1\n$2 ");
+  // Fix broken OCR words
+  s = s.replace(/\b([A-Za-z])\s+([a-z]{2,})/g, "$1$2");
 
-  // 🔥 2. Also handle cases like "... (d) text 31 Which..."
-  s = s.replace(/\)\s+(\d{1,3})\s+(?=[A-Z])/g, ")\n$1 ");
+  // 🔥 Ensure question numbers start on new line
+  s = s.replace(/([^\n])\s+(\d{1,3})[\.\)]\s+/g, "$1\n$2 ");
 
-  // 🔥 3. Force newline before options
-  s = s.replace(/\s*[\(\[]?([a-dA-D])[\)\]\.]\s+/g, "\n($1) ");
+  // 🔥 Convert (1)(2)(3)(4) → newline separated
+  s = s.replace(/\(\s*([1-4])\s*\)/g, "\n($1) ");
+
+  // 🔥 Convert inline options like " (1) A (2) B"
+  s = s.replace(/([^\n])\s+\(\s*([1-4])\s*\)\s+/g, "$1\n($2) ");
+
+  // 🔥 Handle a,b,c,d also
+  s = s.replace(/\(\s*([a-dA-D])\s*\)/g, "\n($1) ");
 
   return s;
 }
