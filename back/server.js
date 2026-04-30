@@ -14,6 +14,8 @@ app.use(express.json());
 
 const upload = multer({ dest: "uploads/" });
 
+// THIS IS THE LATEST
+
 const APP_ID = process.env.MATHPIX_APP_ID || "sarvajnaandjusticeshivarajpatilpucollege_32fc00_c50abe";
 const APP_KEY = process.env.MATHPIX_APP_KEY || "389d59b96cdb62afd693865383e49a4bce0d9a1666d0117b49855c53dba69391";
 
