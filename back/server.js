@@ -106,7 +106,10 @@ function cleanMmdText(mmd) {
   // Fix common OCR mistakes
 s = s.replace(/\bI\s+([a-z])/g, (m, p1) => p1.toUpperCase()); // I hree → Three
 s = s.replace(/\b1\s+([a-z])/g, "$1"); // 1 hree → hree
-s = s.replace(/\b([A-Za-z])\s+([a-z]{2,})/g, "$1$2"); // T hree → Three
+// Fix only known OCR mistakes
+s = s.replace(/\bT\s+hree\b/g, "Three");
+s = s.replace(/\bF\s+our\b/g, "Four");
+s = s.replace(/\bS\s+even\b/g, "Seven");
  
   return s.trim();
 }
@@ -270,7 +273,10 @@ function normalizeInlineOptions(text) {
   let s = text;
 
   // Fix broken OCR words
-  s = s.replace(/\b([A-Za-z])\s+([a-z]{2,})/g, "$1$2");
+// Fix only known OCR mistakes
+s = s.replace(/\bT\s+hree\b/g, "Three");
+s = s.replace(/\bF\s+our\b/g, "Four");
+s = s.replace(/\bS\s+even\b/g, "Seven");
 
   // 🔥 Ensure question numbers start on new line
   s = s.replace(/([^\n])\s+(\d{1,3})[\.\)]\s+/g, "$1\n$2 ");
