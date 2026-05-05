@@ -170,127 +170,133 @@ while ((match = regex.exec(textToParse)) !== null) {
 
 
 
-function normalizeInlineOptions(text) {
-  let s = text;
-
-  // 1. Fix broken OCR words
-  s = s.replace(/\bT\s+hree\b/g, "Three");
-  s = s.replace(/\bF\s+our\b/g, "Four");
-  s = s.replace(/\bS\s+even\b/g, "Seven");
-
-  // 2. Protect Roman Numerals (I, II, III, IV, V) from being treated as new questions
-  // We ensure they have a space or newline but don't force a "New Question" break
-  s = s.replace(/([^\n])\s+([IVX]{1,3})\.\s+/g, "$1\n$2. ");
-
-  // 3. Ensure question numbers start on new line, but ONLY if followed by actual text
-  s = s.replace(/([^\n])\s+(\d{1,3})[\.\)]\s+/g, "$1\n$2. ");
-
-  // 4. SMART OPTION SPLITTING
-  // Only split if there is a significant gap (2+ spaces) OR it's a clear list format
-  // This prevents (a) from jumping to a new line if it was already correctly placed.
-  s = s.replace(/\s{2,}\(?\s*([b-dB-D2-4])\s*[\)\.]/g, "\n($1)");
-  s = s.replace(/([^\n]{20,})\s{2,}\(?\s*([a-dA-D1-4])\s*[\)\.]/g, "$1\n($2)");
-
-  return s;
-}
-
-function parseQuestions(cleaned, optionType) {
+/* Parse into questions + options */
+function parseQuestions(cleaned) {
   const lines = cleaned.split("\n").map(l => l.trim()).filter(Boolean);
   const questions = [];
   let current = null;
 
-  const qStart = /^(\d{1,3})[\.\)]?\s+(.*)/;
-  
-  let optRe;
-  if (optionType === "a.") optRe = /^([a-d])\.\s+(.*)$/i;
-  else if (optionType === "(a)") optRe = /^\(([a-d])\)\s+(.*)$/i;
-  else if (optionType === "1.") optRe = /^([1-4])\.\s+(.+)$/;
-  else if (optionType === "(1)") optRe = /^\(([1-4])\)\s+(.*)$/;
-  else if (optionType === "A.") optRe = /^([A-D])\.\s+(.*)$/;
-  else if (optionType === "(A)") optRe = /^\(([A-D])\)\s+(.*)$/;
-  else optRe = /^\(?\s*([a-dA-D1-4])\s*[\)\.]?\s+(.*)$/i;
+  // Pattern for Question: Matches "31. Text" or "31 Text"
+const qStart = /^(\d{1,3})[\.\)]?\s+(.*)/;
+  // Pattern for Option: Matches "(a) Text" or "a. Text"
+const optRe = /^\(?\s*([a-dA-D1-4])\s*[\)\.]?\s+(.*)$/;
 
   for (const line of lines) {
-    if (/\\begin\{table\}/i.test(line) || /Answers/i.test(line)) break;
-
-    // Filter out OCR junk like standalone "Q1" or "Q94" that break flow
-   const qOnlyMatch = line.match(/^Q(\d{1,3})$/i);
-
-if (qOnlyMatch) {
-  const qNum = Number(qOnlyMatch[1]);
-
-  // Start new question ONLY if previous question has options (means it's complete)
-  if (current && current.options.length > 0) {
-    questions.push(current);
-    current = { number: qNum, stem: "", options: [] };
-  } else if (!current) {
-    current = { number: qNum, stem: "", options: [] };
+     // 🚨 STOP when table starts
+  if (/\\begin\{table\}/i.test(line)) {
+    break;
   }
+  // 🚨 STOP when answers section starts
+  if (/Answers/i.test(line)) {
+    break;
+  }
+    const qMatch = line.match(qStart);
+    const oMatch = line.match(optRe);
 
-  continue;
+    // 🔥 FIX: detect missed question when options already full
+if (current && current.options.length === 4 && !oMatch) {
+  const forcedQ = line.match(/^(\d{1,3})\s+(.*)/);
+
+  if (forcedQ) {
+    questions.push(current);
+
+    current = {
+      number: Number(forcedQ[1]),
+      stem: forcedQ[2],
+      options: []
+    };
+
+    continue;
+  }
 }
-let oMatch = line.match(optRe);
-let qMatch = line.match(qStart);
 
-// 🔥 CRITICAL FIX: if option type is numeric, prioritize option match
-if ((optionType === "1." || optionType === "(1)") && oMatch) {
-  qMatch = null; // prevent it from becoming a question
-}
-
-    // If we find a question number, but we are already in a question and haven't found options yet,
-    // check if it's actually a new question or just a list item (like 1. II. III.)
+    // --- CASE 1: NEW QUESTION DETECTED ---
     if (qMatch) {
       const qNum = Number(qMatch[1]);
       const qText = qMatch[2];
 
-      
-  // ❌ BLOCK FAKE BREAK (your exact bug)
-  if (current && current.options.length === 0) {
-    // This is NOT a new question — it's continuation
-    current.stem += " " + qMatch[2];
+      // If we already have a question, push it to the list
+      if (current) {
+        questions.push(current);
+      }
+
+      current = {
+        number: qNum,
+        stem: qText,
+        options: []
+      };
+      continue;
+    }
+
+    // --- CASE 2: OPTION DETECTED ---
+if (current && oMatch) {
+  let label = oMatch[1].toLowerCase();
+  const text = oMatch[2].trim();
+
+  // 🔥 convert 1,2,3,4 → a,b,c,d
+  if (["1", "2", "3", "4"].includes(label)) {
+    label = String.fromCharCode(96 + Number(label)); // 1→a
+  }
+
+  const exists = current.options.find(o => o.label === label);
+  if (!exists) {
+    current.options.push({ label, text });
+    continue;
+  }
+}
+
+    // --- CASE 3: CONTINUATION TEXT ---
+    if (current) {
+  if (current.options.length > 0) {
+
+  // 🚨 Ignore answer/table junk
+  if (
+    /\\begin\{table\}/i.test(line) ||
+    /Mastering NCERT|Answers|NEET Special/i.test(line)
+  ) {
     continue;
   }
 
-      // If the new number is "1" but our current question is "94", it's likely OCR error/junk
-      if (current && qNum === 1 && current.number !== 1 && current.options.length === 0) {
-        current.stem += " " + qText;
-        continue;
-      }
-
-      if (current) questions.push(current);
-      current = { number: qNum, stem: qText, options: [] };
-      continue;
-    }
-
-    if (current && oMatch) {
-      let label = oMatch[1].toLowerCase();
-      const text = oMatch[2].trim();
-      if (["1", "2", "3", "4"].includes(label)) {
-        label = String.fromCharCode(96 + Number(label));
-      }
-
-      // Check for duplicate labels (happens with "Both (a) and (b)")
-      const exists = current.options.find(o => o.label === label);
-      if (exists) {
-        current.options[current.options.length - 1].text += " " + line;
-      } else {
-        current.options.push({ label, text });
-      }
-      continue;
-    }
-
-    if (current) {
-      if (current.options.length > 0) {
-        current.options[current.options.length - 1].text += " " + line;
-      } else {
-        // Append Roman numeral lists or continued text to the stem
-        current.stem += "\n" + line; 
+  current.options[current.options.length - 1].text += " " + line;
+} else {
+        // Add text to the question stem
+        current.stem += " " + line;
       }
     }
   }
+
+  // Push the final question
   if (current) questions.push(current);
+  
   return questions;
 }
+
+function normalizeInlineOptions(text) {
+  let s = text;
+
+  // Fix broken OCR words
+// Fix only known OCR mistakes
+s = s.replace(/\bT\s+hree\b/g, "Three");
+s = s.replace(/\bF\s+our\b/g, "Four");
+s = s.replace(/\bS\s+even\b/g, "Seven");
+
+  // 🔥 Ensure question numbers start on new line
+  s = s.replace(/([^\n])\s+(\d{1,3})[\.\)]\s+/g, "$1\n$2 ");
+
+  // 🔥 Convert (1)(2)(3)(4) → newline separated
+  s = s.replace(/\(\s*([1-4])\s*\)/g, "\n($1) ");
+
+  // 🔥 Convert inline options like " (1) A (2) B"
+  s = s.replace(/([^\n])\s+\(\s*([1-4])\s*\)\s+/g, "$1\n($2) ");
+
+  // 🔥 Handle a,b,c,d also
+  s = s.replace(/\(\s*([a-dA-D])\s*\)/g, "\n($1) ");
+
+  return s;
+}
+
+
+
 
 /* Build LaTeX (unchanged) */
 function generateLatexQuestions(questions) {
@@ -322,8 +328,7 @@ ${latexQuestions}
 
 /* Convert API (unchanged) */
 app.post("/api/convert", upload.single("pdf"), async (req, res) => {
-  const { optionType } = req.body; // Catch from frontend
-    const filePath = req.file?.path;
+  const filePath = req.file?.path;
   try {
     const uploaded = await uploadToMathpix(filePath);
     const pdf_id = uploaded.pdf_id;
@@ -334,7 +339,7 @@ app.post("/api/convert", upload.single("pdf"), async (req, res) => {
     console.log("ANSWER MAP:", answerMap);
 let cleaned = cleanMmdText(mmd);
 cleaned = normalizeInlineOptions(cleaned);   // 🔥 CRITICAL LINE
-const questions = parseQuestions(cleaned, optionType);
+const questions = parseQuestions(cleaned);
 
 
     // attach answer to each question

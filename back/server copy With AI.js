@@ -7,6 +7,7 @@ import FormData from "form-data";
 import fs from "fs";
 import cors from "cors";
 import { Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -14,10 +15,13 @@ app.use(express.json());
 
 const upload = multer({ dest: "uploads/" });
 
-// THIS IS THE LATEST
-
+// Mathpix credentials
 const APP_ID = process.env.MATHPIX_APP_ID || "sarvajnaandjusticeshivarajpatilpucollege_32fc00_c50abe";
 const APP_KEY = process.env.MATHPIX_APP_KEY || "389d59b96cdb62afd693865383e49a4bce0d9a1666d0117b49855c53dba69391";
+
+// Gemini AI setup
+const genAI = new GoogleGenerativeAI('AIzaSyAnJvf4fizsN_vS49_JJjCxN38Mm_mb8NA');
+const model = genAI.getGenerativeModel({ model: "gemini-3.1-pro-preview" });
 
 /* Upload PDF to Mathpix */
 async function uploadToMathpix(filePath) {
@@ -47,9 +51,7 @@ function extractInlineOptions(text) {
     return { cleanedStem: text.trim(), options: [] };
   }
 
-  // Match: a. ![](any_url_with_any_chars)
   const optionRegex = /([a-dA-D])\.\s*(\!\[[^\]]*?\]\([^)]*?\))/g;
-
   const options = [];
   let cleanedStem = text;
   let match;
@@ -59,8 +61,6 @@ function extractInlineOptions(text) {
       label: match[1].toLowerCase(),
       text: match[2].trim(),
     });
-
-    // Remove this option from stem
     cleanedStem = cleanedStem.replace(match[0], "");
   }
 
@@ -69,8 +69,6 @@ function extractInlineOptions(text) {
     options,
   };
 }
-
-
 
 /* Poll job */
 async function pollStatus(pdf_id) {
@@ -106,57 +104,41 @@ function cleanMmdText(mmd) {
   s = s.replace(/\\begin\{table\}[\s\S]*?\\end\{table\}/g, "");
 
   // Fix common OCR mistakes
-s = s.replace(/\bI\s+([a-z])/g, (m, p1) => p1.toUpperCase()); // I hree → Three
-s = s.replace(/\b1\s+([a-z])/g, "$1"); // 1 hree → hree
-// Fix only known OCR mistakes
-s = s.replace(/\bT\s+hree\b/g, "Three");
-s = s.replace(/\bF\s+our\b/g, "Four");
-s = s.replace(/\bS\s+even\b/g, "Seven");
+  s = s.replace(/\bI\s+([a-z])/g, (m, p1) => p1.toUpperCase());
+  s = s.replace(/\b1\s+([a-z])/g, "$1");
+  s = s.replace(/\bT\s+hree\b/g, "Three");
+  s = s.replace(/\bF\s+our\b/g, "Four");
+  s = s.replace(/\bS\s+even\b/g, "Seven");
  
   return s.trim();
 }
 
 function extractAnswerKey(mmd) {
   const answerMap = {};
-
   const startIndex = mmd.search(/Answers/i);
   if (startIndex === -1) return {};
 
-  // 🔥 include buffer before Answers
-  const answerText = mmd.slice(Math.max(0, startIndex - 200));
+  let textToParse = mmd.slice(Math.max(0, startIndex - 200));
+  textToParse = textToParse
+    .replace(/\\begin\{.*?\}/g, "")
+    .replace(/\\end\{.*?\}/g, "")
+    .replace(/\\hline/g, "")
+    .replace(/\$/g, "")
+    .replace(/&/g, " ")
+    .replace(/\\\\/g, " ")
+    .replace(/\s+/g, " ");
 
-
-  // ✅ use full text (no limit)
- let textToParse = answerText;
-
-// 🔥 remove latex table junk
-textToParse = textToParse
-  .replace(/\\begin\{.*?\}/g, "")
-  .replace(/\\end\{.*?\}/g, "")
-  .replace(/\\hline/g, "")
-  .replace(/\$/g, "")
-  .replace(/&/g, " ")
-  .replace(/\\\\/g, " ")
-  .replace(/\s+/g, " ");
-
-
- // 🔍 DEBUG HERE
-  console.log("TEXT LENGTH:", textToParse.length);
-  console.log("LAST PART OF TEXT:\n", textToParse.slice(-500));
-
-const regex = /(\d{1,3})\s*(?:&|\s)*\s*\(?\$?\(?\s*([A-Da-d])\s*\)?\$?\)?/g;
-
+  const regex = /(\d{1,3})\s*(?:&|\s)*\s*\(?\$?\(?\s*([A-Da-d])\s*\)?\$?\)?/g;
   let match;
-while ((match = regex.exec(textToParse)) !== null) {
+
+  while ((match = regex.exec(textToParse)) !== null) {
     const qNum = Number(match[1]);
     const ans = match[2].toLowerCase();
-
     if (qNum >= 1 && qNum <= 122) {
       answerMap[qNum] = ans;
     }
   }
 
-  // 🔥 fallback for Q1
   if (!answerMap[1]) {
     const fallbackMatch = mmd.match(/1\s*[\.\:\-\)]?\s*\(?\s*([A-Da-d])\s*\)?/);
     if (fallbackMatch) {
@@ -167,98 +149,50 @@ while ((match = regex.exec(textToParse)) !== null) {
   return answerMap;
 }
 
-
-
-
-function normalizeInlineOptions(text) {
-  let s = text;
-
-  // 1. Fix broken OCR words
-  s = s.replace(/\bT\s+hree\b/g, "Three");
-  s = s.replace(/\bF\s+our\b/g, "Four");
-  s = s.replace(/\bS\s+even\b/g, "Seven");
-
-  // 2. Protect Roman Numerals (I, II, III, IV, V) from being treated as new questions
-  // We ensure they have a space or newline but don't force a "New Question" break
-  s = s.replace(/([^\n])\s+([IVX]{1,3})\.\s+/g, "$1\n$2. ");
-
-  // 3. Ensure question numbers start on new line, but ONLY if followed by actual text
-  s = s.replace(/([^\n])\s+(\d{1,3})[\.\)]\s+/g, "$1\n$2. ");
-
-  // 4. SMART OPTION SPLITTING
-  // Only split if there is a significant gap (2+ spaces) OR it's a clear list format
-  // This prevents (a) from jumping to a new line if it was already correctly placed.
-  s = s.replace(/\s{2,}\(?\s*([b-dB-D2-4])\s*[\)\.]/g, "\n($1)");
-  s = s.replace(/([^\n]{20,})\s{2,}\(?\s*([a-dA-D1-4])\s*[\)\.]/g, "$1\n($2)");
-
-  return s;
-}
-
-function parseQuestions(cleaned, optionType) {
+/* Parse into questions + options */
+function parseQuestions(cleaned) {
   const lines = cleaned.split("\n").map(l => l.trim()).filter(Boolean);
   const questions = [];
   let current = null;
 
   const qStart = /^(\d{1,3})[\.\)]?\s+(.*)/;
-  
-  let optRe;
-  if (optionType === "a.") optRe = /^([a-d])\.\s+(.*)$/i;
-  else if (optionType === "(a)") optRe = /^\(([a-d])\)\s+(.*)$/i;
-  else if (optionType === "1.") optRe = /^([1-4])\.\s+(.+)$/;
-  else if (optionType === "(1)") optRe = /^\(([1-4])\)\s+(.*)$/;
-  else if (optionType === "A.") optRe = /^([A-D])\.\s+(.*)$/;
-  else if (optionType === "(A)") optRe = /^\(([A-D])\)\s+(.*)$/;
-  else optRe = /^\(?\s*([a-dA-D1-4])\s*[\)\.]?\s+(.*)$/i;
+  const optRe = /^\(?\s*([a-dA-D1-4])\s*[\)\.]?\s+(.*)$/;
 
   for (const line of lines) {
-    if (/\\begin\{table\}/i.test(line) || /Answers/i.test(line)) break;
+    if (/\\begin\{table\}/i.test(line)) {
+      break;
+    }
+    if (/Answers/i.test(line)) {
+      break;
+    }
+    
+    const qMatch = line.match(qStart);
+    const oMatch = line.match(optRe);
 
-    // Filter out OCR junk like standalone "Q1" or "Q94" that break flow
-   const qOnlyMatch = line.match(/^Q(\d{1,3})$/i);
+    if (current && current.options.length === 4 && !oMatch) {
+      const forcedQ = line.match(/^(\d{1,3})\s+(.*)/);
+      if (forcedQ) {
+        questions.push(current);
+        current = {
+          number: Number(forcedQ[1]),
+          stem: forcedQ[2],
+          options: []
+        };
+        continue;
+      }
+    }
 
-if (qOnlyMatch) {
-  const qNum = Number(qOnlyMatch[1]);
-
-  // Start new question ONLY if previous question has options (means it's complete)
-  if (current && current.options.length > 0) {
-    questions.push(current);
-    current = { number: qNum, stem: "", options: [] };
-  } else if (!current) {
-    current = { number: qNum, stem: "", options: [] };
-  }
-
-  continue;
-}
-let oMatch = line.match(optRe);
-let qMatch = line.match(qStart);
-
-// 🔥 CRITICAL FIX: if option type is numeric, prioritize option match
-if ((optionType === "1." || optionType === "(1)") && oMatch) {
-  qMatch = null; // prevent it from becoming a question
-}
-
-    // If we find a question number, but we are already in a question and haven't found options yet,
-    // check if it's actually a new question or just a list item (like 1. II. III.)
     if (qMatch) {
       const qNum = Number(qMatch[1]);
       const qText = qMatch[2];
-
-      
-  // ❌ BLOCK FAKE BREAK (your exact bug)
-  if (current && current.options.length === 0) {
-    // This is NOT a new question — it's continuation
-    current.stem += " " + qMatch[2];
-    continue;
-  }
-
-      // If the new number is "1" but our current question is "94", it's likely OCR error/junk
-      if (current && qNum === 1 && current.number !== 1 && current.options.length === 0) {
-        current.stem += " " + qText;
-        continue;
+      if (current) {
+        questions.push(current);
       }
-
-      if (current) questions.push(current);
-      current = { number: qNum, stem: qText, options: [] };
+      current = {
+        number: qNum,
+        stem: qText,
+        options: []
+      };
       continue;
     }
 
@@ -268,31 +202,142 @@ if ((optionType === "1." || optionType === "(1)") && oMatch) {
       if (["1", "2", "3", "4"].includes(label)) {
         label = String.fromCharCode(96 + Number(label));
       }
-
-      // Check for duplicate labels (happens with "Both (a) and (b)")
       const exists = current.options.find(o => o.label === label);
-      if (exists) {
-        current.options[current.options.length - 1].text += " " + line;
-      } else {
+      if (!exists) {
         current.options.push({ label, text });
+        continue;
       }
-      continue;
     }
 
     if (current) {
       if (current.options.length > 0) {
+        if (/\\begin\{table\}/i.test(line) ||
+          /Mastering NCERT|Answers|NEET Special/i.test(line)) {
+          continue;
+        }
         current.options[current.options.length - 1].text += " " + line;
       } else {
-        // Append Roman numeral lists or continued text to the stem
-        current.stem += "\n" + line; 
+        current.stem += " " + line;
       }
     }
   }
+
   if (current) questions.push(current);
   return questions;
 }
 
-/* Build LaTeX (unchanged) */
+function normalizeInlineOptions(text) {
+  let s = text;
+  s = s.replace(/\bT\s+hree\b/g, "Three");
+  s = s.replace(/\bF\s+our\b/g, "Four");
+  s = s.replace(/\bS\s+even\b/g, "Seven");
+  s = s.replace(/([^\n])\s+(\d{1,3})[\.\)]\s+/g, "$1\n$2 ");
+  s = s.replace(/\(\s*([1-4])\s*\)/g, "\n($1) ");
+  s = s.replace(/([^\n])\s+\(\s*([1-4])\s*\)\s+/g, "$1\n($2) ");
+  s = s.replace(/\(\s*([a-dA-D])\s*\)/g, "\n($1) ");
+  return s;
+}
+
+/* GEMINI AI: Verify and correct questions and options */
+async function verifyWithGemini(questions) {
+  console.log("🤖 Sending questions to Gemini AI for verification...");
+  
+  const verifiedQuestions = [];
+  
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    
+    // Prepare the prompt for Gemini
+    const prompt = `
+You are an expert educational content reviewer. Please verify and correct the following multiple choice question.
+
+Current Question Data:
+Question Number: ${q.number}
+Question Stem: ${q.stem}
+Options:
+A) ${q.options.find(opt => opt.label === 'a')?.text || 'Missing'}
+B) ${q.options.find(opt => opt.label === 'b')?.text || 'Missing'}
+C) ${q.options.find(opt => opt.label === 'c')?.text || 'Missing'}
+D) ${q.options.find(opt => opt.label === 'd')?.text || 'Missing'}
+Current Answer Key: ${q.answer || 'Not specified'}
+
+Please analyze this question and:
+1. Check if the question stem is grammatically correct and makes sense
+2. Verify that all options are relevant and properly formatted
+3. Identify if there are any OCR errors, missing punctuation, or formatting issues
+4. Determine the correct answer based on the content
+5. Suggest improvements if needed
+
+Return a JSON object in this exact format:
+{
+  "verified": true/false,
+  "correctedStem": "fixed question stem text",
+  "correctedOptions": {
+    "a": "fixed option a text",
+    "b": "fixed option b text", 
+    "c": "fixed option c text",
+    "d": "fixed option d text"
+  },
+  "suggestedAnswer": "a/b/c/d",
+  "issues": ["list of issues found"],
+  "suggestions": ["list of suggestions"]
+}
+
+If no corrections are needed, return the original text in the "corrected" fields.
+`;
+
+    try {
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      
+      // Extract JSON from the response
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const correction = JSON.parse(jsonMatch[0]);
+        
+        // Apply corrections
+        const correctedQuestion = {
+          ...q,
+          stem: correction.correctedStem || q.stem,
+          options: [
+            { label: 'a', text: correction.correctedOptions?.a || q.options.find(opt => opt.label === 'a')?.text || '' },
+            { label: 'b', text: correction.correctedOptions?.b || q.options.find(opt => opt.label === 'b')?.text || '' },
+            { label: 'c', text: correction.correctedOptions?.c || q.options.find(opt => opt.label === 'c')?.text || '' },
+            { label: 'd', text: correction.correctedOptions?.d || q.options.find(opt => opt.label === 'd')?.text || '' }
+          ],
+          answer: correction.suggestedAnswer || q.answer,
+          geminiVerified: correction.verified,
+          geminiIssues: correction.issues || [],
+          geminiSuggestions: correction.suggestions || []
+        };
+        
+        verifiedQuestions.push(correctedQuestion);
+        console.log(`✅ Question ${q.number} verified by Gemini`);
+        
+        if (correction.issues?.length > 0) {
+          console.log(`   Issues found: ${correction.issues.join(', ')}`);
+        }
+      } else {
+        // If JSON parsing fails, keep original
+        console.log(`⚠️ Could not parse Gemini response for question ${q.number}, keeping original`);
+        verifiedQuestions.push({ ...q, geminiVerified: false, geminiError: "Failed to parse response" });
+      }
+      
+      // Add a small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+    } catch (error) {
+      console.error(`❌ Error verifying question ${q.number} with Gemini:`, error.message);
+      verifiedQuestions.push({ ...q, geminiVerified: false, geminiError: error.message });
+    }
+  }
+  
+  console.log("🎉 Gemini verification completed!");
+  return verifiedQuestions;
+}
+
+/* Build LaTeX */
 function generateLatexQuestions(questions) {
   return questions.map(q => {
     const opts = q.options
@@ -302,7 +347,7 @@ function generateLatexQuestions(questions) {
   }).join("\n\n");
 }
 
-/* Build full LaTeX (unchanged) */
+/* Build full LaTeX */
 function createLatexDocument(latexQuestions) {
   return `
 \\documentclass[12pt]{article}
@@ -320,10 +365,9 @@ ${latexQuestions}
 `.trim();
 }
 
-/* Convert API (unchanged) */
+/* Convert API with Gemini integration */
 app.post("/api/convert", upload.single("pdf"), async (req, res) => {
-  const { optionType } = req.body; // Catch from frontend
-    const filePath = req.file?.path;
+  const filePath = req.file?.path;
   try {
     const uploaded = await uploadToMathpix(filePath);
     const pdf_id = uploaded.pdf_id;
@@ -332,18 +376,22 @@ app.post("/api/convert", upload.single("pdf"), async (req, res) => {
     const mmd = await getMmdContent(pdf_id);
     const answerMap = extractAnswerKey(mmd);
     console.log("ANSWER MAP:", answerMap);
-let cleaned = cleanMmdText(mmd);
-cleaned = normalizeInlineOptions(cleaned);   // 🔥 CRITICAL LINE
-const questions = parseQuestions(cleaned, optionType);
-
+    
+    let cleaned = cleanMmdText(mmd);
+    cleaned = normalizeInlineOptions(cleaned);
+    let questions = parseQuestions(cleaned);
 
     // attach answer to each question
     questions.forEach(q => {
       q.answer = answerMap[q.number] || "";
     });
 
+    // NEW: Verify and correct questions with Gemini AI
+    console.log("🔍 Starting Gemini AI verification...");
+    const verifiedQuestions = await verifyWithGemini(questions);
+    console.log("✅ Gemini verification complete!");
 
-    const latex_questions = generateLatexQuestions(questions);
+    const latex_questions = generateLatexQuestions(verifiedQuestions);
     const latex_document = createLatexDocument(latex_questions);
 
     fs.unlinkSync(filePath);
@@ -351,11 +399,13 @@ const questions = parseQuestions(cleaned, optionType);
     res.json({
       success: true,
       pdf_id,
-      questions,
+      questions: verifiedQuestions, // Send verified questions
+      original_questions: questions, // Also send original for comparison if needed
       cleaned_text: cleaned,
       raw_mmd: mmd,
       latex_questions,
-      latex_document
+      latex_document,
+      gemini_enabled: true
     });
   } catch (err) {
     if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -363,15 +413,45 @@ const questions = parseQuestions(cleaned, optionType);
   }
 });
 
-/* ---------------------------- */
-/* UPDATED: DOWNLOAD DOCX ENDPOINT */
-/* ---------------------------- */
+// New endpoint: Manual verification of specific question
+app.post("/api/verify-question", async (req, res) => {
+  const { question } = req.body;
+  
+  try {
+    const prompt = `
+Verify this multiple choice question:
+Question: ${question.stem}
+Options:
+A: ${question.options.find(o => o.label === 'a')?.text}
+B: ${question.options.find(o => o.label === 'b')?.text}
+C: ${question.options.find(o => o.label === 'c')?.text}
+D: ${question.options.find(o => o.label === 'd')?.text}
+Current Answer: ${question.answer}
+
+Return JSON with corrections if any.
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const correction = JSON.parse(jsonMatch[0]);
+      res.json({ success: true, correction });
+    } else {
+      res.json({ success: false, error: "Could not parse response" });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* Download DOCX endpoint */
 app.post("/api/download-docx", async (req, res) => {
   const { questions } = req.body;
 
-  // Create table rows
   const tableRows = [
-    // Header row
     new TableRow({
       children: [
         new TableCell({ children: [new Paragraph("Sr. No.")], width: { size: 5, type: WidthType.PERCENTAGE } }),
@@ -386,7 +466,6 @@ app.post("/api/download-docx", async (req, res) => {
         new TableCell({ children: [new Paragraph("Medium")], width: { size: 5, type: WidthType.PERCENTAGE } }),
       ],
     }),
-    // Separator row (like the +=====+ line in your sample)
     new TableRow({
       children: [
         new TableCell({ children: [new Paragraph("")] }),
@@ -403,7 +482,6 @@ app.post("/api/download-docx", async (req, res) => {
     }),
   ];
 
-  // Add question rows
   questions.forEach((q) => {
     tableRows.push(
       new TableRow({
@@ -414,11 +492,10 @@ app.post("/api/download-docx", async (req, res) => {
           new TableCell({ children: [new Paragraph(q.options.find(opt => opt.label === 'b')?.text || "")] }),
           new TableCell({ children: [new Paragraph(q.options.find(opt => opt.label === 'c')?.text || "")] }),
           new TableCell({ children: [new Paragraph(q.options.find(opt => opt.label === 'd')?.text || "")] }),
-          new TableCell({ children: [new Paragraph(q.answer.toUpperCase())] }),
-
-          new TableCell({ children: [new Paragraph("")] }), // Empty Solution
-          new TableCell({ children: [new Paragraph("NEET TEST -- 01 (2024)")] }), // Default Tage
-          new TableCell({ children: [new Paragraph("Easy")] }), // Default Medium
+          new TableCell({ children: [new Paragraph(q.answer?.toUpperCase() || "")] }),
+          new TableCell({ children: [new Paragraph("")] }),
+          new TableCell({ children: [new Paragraph("NEET TEST -- 01 (2024)")] }),
+          new TableCell({ children: [new Paragraph("Easy")] }),
         ],
       })
     );
